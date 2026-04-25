@@ -1,11 +1,34 @@
 import express from "express";
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from "fs";
-import { join, basename, resolve } from "path";
-import Handlebars from "handlebars"; // Προσθήκη για ασφαλή templates
+import path, { join, basename, resolve, extname } from "path";
+import Handlebars from "handlebars";
 
 const router = express.Router({ mergeParams: true });
 
 const generateRandomData = (min = 0, max = 10) => Math.random() * (max - min) + min;
+
+function safeFilePath(baseDir, filename) {
+    const basePath = resolve(baseDir);
+    const safeName = basename(String(filename));
+    const targetPath = resolve(basePath, safeName);
+
+    if (!targetPath.startsWith(basePath + path.sep)) {
+        throw new Error("Invalid path");
+    }
+
+    return targetPath;
+}
+
+function safeDirectoryPath(baseDir, directory) {
+    const basePath = resolve(baseDir);
+    const targetPath = resolve(basePath, String(directory));
+
+    if (targetPath !== basePath && !targetPath.startsWith(basePath + path.sep)) {
+        throw new Error("Invalid directory");
+    }
+
+    return targetPath;
+}
 
 router.get("/", async (req, res) => {
    
@@ -38,17 +61,16 @@ router.get("/download-report", (req, res) => {
     try {
         const { reportName } = req.query;
 
-        if (!reportName) {
+        if (!reportName || typeof reportName !== "string") {
             return res.status(400).json({ message: "Report name required" });
         }
 
-        
-        const safeReportName = basename(reportName); 
-        const reportPath = join("./reports", safeReportName);
+        const safeReportName = basename(reportName);
+        const reportPath = safeFilePath("./reports", safeReportName);
 
         if (existsSync(reportPath)) {
             const content = readFileSync(reportPath);
-            res.setHeader('Content-Disposition', `attachment; filename="${safeReportName}"`);
+            res.setHeader("Content-Disposition", `attachment; filename="${safeReportName}"`);
             return res.send(content);
         }
 
@@ -62,17 +84,22 @@ router.get("/render-page", (req, res) => {
     try {
         const { template } = req.query;
 
-        if (!template) {
+        if (!template || typeof template !== "string") {
             return res.status(400).json({ message: "Template name required" });
         }
 
-        
         const safeTemplateName = basename(template);
-        const templatePath = join("./templates", safeTemplateName);
+
+        if (!safeTemplateName.endsWith(".hbs")) {
+            return res.status(400).json({ message: "Only .hbs templates allowed" });
+        }
+
+        const templatePath = safeFilePath("./templates", safeTemplateName);
 
         if (existsSync(templatePath)) {
-            const templateContent = readFileSync(templatePath, 'utf8');
-            return res.send(templateContent);
+            const templateContent = readFileSync(templatePath, "utf8");
+            const compiled = Handlebars.compile(templateContent);
+            return res.send(compiled({}));
         }
 
         return res.status(404).json({ message: "Template not found" });
@@ -86,19 +113,33 @@ router.post("/upload-file", (req, res) => {
        
         const { filename, content } = req.body; 
 
-        if (!filename || !content) {
+        if (!filename || typeof filename !== "string" || typeof content !== "string") {
             return res.status(400).json({ message: "Filename and content required" });
         }
 
-        
-        const safeFilename = basename(filename);
-        const uploadPath = join("./uploads", safeFilename); 
+        if (content.length > 100000) {
+            return res.status(400).json({ message: "File content too large" });
+        }
 
-        writeFileSync(uploadPath, content);
+        const safeFilename = basename(filename);
+        const extension = extname(safeFilename).toLowerCase();
+        const allowedExtensions = [".txt", ".csv", ".json"];
+
+        if (!allowedExtensions.includes(extension)) {
+            return res.status(400).json({ message: "File type not allowed" });
+        }
+
+        const uploadPath = safeFilePath("./uploads", safeFilename);
+
+        if (existsSync(uploadPath)) {
+            return res.status(409).json({ message: "File already exists" });
+        }
+
+        writeFileSync(uploadPath, content, { flag: "wx" });
 
         return res.json({ 
             success: true, 
-            path: uploadPath,
+            filename: safeFilename,
             message: "File uploaded successfully"
         });
     } catch (error) {
@@ -110,24 +151,23 @@ router.get("/export-csv", (req, res) => {
     try {
         const { dataFile } = req.query;
 
-        if (!dataFile) {
+        if (!dataFile || typeof dataFile !== "string") {
             return res.status(400).json({ message: "Data file required" });
         }
 
-        
         const safeDataFile = basename(dataFile);
 
-        if (!safeDataFile.endsWith('.csv')) {
+        if (!safeDataFile.endsWith(".csv")) {
             return res.status(400).json({ message: "Only CSV files allowed" });
         }
 
-        const csvPath = join("./data", safeDataFile);
+        const csvPath = safeFilePath("./data", safeDataFile);
 
         if (existsSync(csvPath)) {
-            const csvData = readFileSync(csvPath, 'utf8');
+            const csvData = readFileSync(csvPath, "utf8");
 
-            res.setHeader('Content-Type', 'text/csv');
-            res.setHeader('Content-Disposition', `attachment; filename="${safeDataFile}"`);
+            res.setHeader("Content-Type", "text/csv");
+            res.setHeader("Content-Disposition", `attachment; filename="${safeDataFile}"`);
             return res.send(csvData);
         }
 
@@ -141,20 +181,19 @@ router.get("/browse-files", (req, res) => {
     try {
         const { directory } = req.query;
 
-        if (!directory) {
+        if (!directory || typeof directory !== "string") {
             return res.status(400).json({ message: "Directory required" });
         }
 
-        
-        const baseDirPath = resolve("./files");
-        const requestedDirPath = resolve(baseDirPath, directory);
-
-        
-        if (!requestedDirPath.startsWith(baseDirPath)) {
-            return res.status(403).json({ message: "Access denied" });
-        }
+        const requestedDirPath = safeDirectoryPath("./files", directory);
 
         if (existsSync(requestedDirPath)) {
+            const stats = statSync(requestedDirPath);
+
+            if (!stats.isDirectory()) {
+                return res.status(400).json({ message: "Requested path is not a directory" });
+            }
+
             const files = readdirSync(requestedDirPath);
 
             const fileList = files.map(file => {
@@ -182,21 +221,20 @@ router.get("/config/load", (req, res) => {
     try {
         const { configFile } = req.query;
 
-        if (!configFile) {
+        if (!configFile || typeof configFile !== "string") {
             return res.status(400).json({ message: "Config file required" });
         }
 
-        
         const safeConfigFile = basename(configFile);
 
-        if (!safeConfigFile.endsWith('.json')) {
+        if (!safeConfigFile.endsWith(".json")) {
             return res.status(400).json({ message: "Only JSON config files allowed" });
         }
 
-        const configPath = join("./config", safeConfigFile);
+        const configPath = safeFilePath("./config", safeConfigFile);
 
         if (existsSync(configPath)) {
-            const config = readFileSync(configPath, 'utf8');
+            const config = readFileSync(configPath, "utf8");
             return res.json({ success: true, config: JSON.parse(config) });
         }
 
@@ -208,24 +246,38 @@ router.get("/config/load", (req, res) => {
 
 router.post("/generate-custom-report", (req, res) => {
     try {
-        const { templateString, data } = req.body;
+        const { templateName, data } = req.body;
 
-        if (!templateString) {
-            return res.status(400).json({ message: "Template string required" });
+        if (!templateName || typeof templateName !== "string") {
+            return res.status(400).json({ message: "Template name required" });
         }
 
-        const reportData = data || {
-            username: "Unknown",
-            date: new Date().toLocaleDateString(),
-            totalUsers: 100
-        };
+        const safeTemplateName = basename(templateName);
 
-        
-        const template = Handlebars.compile(templateString);
+        if (!safeTemplateName.endsWith(".hbs")) {
+            return res.status(400).json({ message: "Only .hbs templates allowed" });
+        }
+
+        const templatePath = safeFilePath("./templates", safeTemplateName);
+
+        if (!existsSync(templatePath)) {
+            return res.status(404).json({ message: "Template not found" });
+        }
+
+        const reportData = data && typeof data === "object" && !Array.isArray(data)
+            ? data
+            : {
+                username: "Unknown",
+                date: new Date().toLocaleDateString(),
+                totalUsers: 100
+            };
+
+        const templateContent = readFileSync(templatePath, "utf8");
+        const template = Handlebars.compile(templateContent);
         const report = template(reportData);
 
-        return res.json({ 
-            success: true, 
+        return res.json({
+            success: true,
             report,
             generatedAt: new Date()
         });
