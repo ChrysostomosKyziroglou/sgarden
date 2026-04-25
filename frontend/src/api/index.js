@@ -34,13 +34,14 @@ const rootApi = ky.extend({
 			},
 		],
 		afterResponse: [
-			(_req, _opts, res) => {
-				const { status } = res;
-				if (status === 500) {
+			(...args) => {
+				const res = args[2];
+
+				if (res.status === 500) {
 					return new Response(JSON.stringify({ success: false }), { status: 200 });
 				}
 
-				if (status === 404) {
+				if (res.status === 404) {
 					window.location.href = "/";
 				}
 
