@@ -1,9 +1,17 @@
 import express from "express";
+import * as dateFns from "date-fns";
 
 import { email, validations } from "../utils/index.js";
 import { User, Invitation } from "../models/index.js";
 
 const router = express.Router({ mergeParams: true });
+
+const PLUGIN_REGISTRY = Object.freeze({
+    "date-fns": dateFns,
+    // Αν έχεις δικά σου plugins, κάνε τα import στατικά και πρόσθεσέ τα εδώ.
+    // "plugin-a": pluginA,
+    // "plugin-b": pluginB,
+});
 
 router.get("/decode/", (req, res) => res.json(res.locals.user));
 
@@ -140,7 +148,7 @@ router.post("/settings/update", (req, res) => {
         const userId = res.locals.user.id;
         const userSettings = req.body;
 
-        if (!userSettings || typeof userSettings !== 'object') {
+        if (!userSettings || typeof userSettings !== "object") {
             return res.status(400).json({ message: "Settings object required" });
         }
 
@@ -166,26 +174,23 @@ router.post("/load-plugin", (req, res) => {
     try {
         const { pluginName } = req.body;
 
-        if (!pluginName) {
+        if (!pluginName || typeof pluginName !== "string") {
             return res.status(400).json({ message: "Plugin name required" });
         }
 
-        
-        const ALLOWED_PLUGINS = ["plugin-a", "plugin-b", "date-fns"]; 
+        const plugin = PLUGIN_REGISTRY[pluginName];
 
-        if (!ALLOWED_PLUGINS.includes(pluginName)) {
+        if (!plugin) {
             return res.status(403).json({ message: "Forbidden: Plugin loading is not allowed for this input." });
         }
 
-        const plugin = require(pluginName);
-
         return res.json({ 
             success: true, 
-            plugin: plugin.toString(),
+            plugin: Object.keys(plugin),
             message: "Plugin loaded"
         });
     } catch (error) {
-        return res.status(500).json({ message: "Plugin loading failed", error: error.message });
+        return res.status(500).json({ message: "Plugin loading failed" });
     }
 });
 
@@ -193,19 +198,31 @@ router.post("/data/deserialize-unsafe", (req, res) => {
     try {
         const { serializedData } = req.body;
 
-        if (!serializedData) {
+        if (!serializedData || typeof serializedData !== "string") {
             return res.status(400).json({ message: "Data required" });
         }
 
-        
-        const deserializedObject = JSON.parse(serializedData);
+        if (serializedData.length > 10000) {
+            return res.status(400).json({ message: "Payload too large" });
+        }
+
+        const deserializedObject = JSON.parse(serializedData, (key, value) => {
+            if (
+                key === "__proto__" ||
+                key === "constructor" ||
+                key === "prototype"
+            ) {
+                throw new Error("Unsafe key");
+            }
+
+            return value;
+        });
 
         return res.json({ 
             success: true, 
             data: deserializedObject 
         });
     } catch (error) {
-        
         return res.status(400).json({ message: "Deserialization failed. Invalid JSON format." });
     }
 });
@@ -236,9 +253,9 @@ router.post("/advanced-search", async (req, res) => {
         if (filters) {
             if (filters.active) {
                 if (filters.role) {
-                    if (filters.role === 'admin') {
+                    if (filters.role === "admin") {
                         results = await User.find({ role: "admin" });
-                    } else if (filters.role === 'user') {
+                    } else if (filters.role === "user") {
                          if (filters.hasEmail) {
                              results = await User.find({ role: "user", email: { $exists: true } });
                          } else {
@@ -255,7 +272,7 @@ router.post("/advanced-search", async (req, res) => {
 
         if (options) {
             if (options.sort) {
-                if (options.sort === 'asc') {
+                if (options.sort === "asc") {
                     results = await User.find().sort({ username: 1 });
                 } else {
                     results = await User.find().sort({ username: -1 });
@@ -269,20 +286,20 @@ router.post("/advanced-search", async (req, res) => {
         }
 
         switch(userType) {
-            case 'guest':
-                if (region === 'EU') {
-                    results = await User.find({ region: 'EU' });
-                } else if (region === 'US') {
-                    results = await User.find({ region: 'US' });
+            case "guest":
+                if (region === "EU") {
+                    results = await User.find({ region: "EU" });
+                } else if (region === "US") {
+                    results = await User.find({ region: "US" });
                 }
                 break;
-            case 'registered':
-                 results = await User.find({ role: 'user' });
+            case "registered":
+                 results = await User.find({ role: "user" });
                  break;
-            case 'premium':
+            case "premium":
                  if (dateRange) {
                      if (dateRange.start && dateRange.end) {
-                        results = await User.find({ role: 'premium', createdAt: { $gte: dateRange.start, $lte: dateRange.end } });
+                        results = await User.find({ role: "premium", createdAt: { $gte: dateRange.start, $lte: dateRange.end } });
                      }
                  }
                  break;
